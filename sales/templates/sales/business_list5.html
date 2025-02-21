@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Manage Businesses</title>
+    {% load static %}
+	{% load currency_filters %}
+	<link rel="manifest" href="{% static 'manifest.json' %}">
+    <link rel="stylesheet" href="{% static 'css/style_2.css' %}">
+	<!-- Include Font Awesome -->
+	<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
+	<script src="https://cdn.jsdelivr.net/npm/pouchdb@7.3.1/dist/pouchdb.min.js"></script>
+    <style>
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        table th, table td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+
+        table th {
+            background-color: #f2f2f2;
+            color: #333;
+        }
+
+        .btn-danger {
+            background-color: #dc3545;
+            color: #fff;
+        }
+		
+		.table-link {
+			display: inline-block;
+			margin: 0 5px;
+			padding: 5px 10px;
+			text-decoration: none;
+			font-size: 0.9rem;
+			border-radius: 4px;
+			font-weight: bold;
+			text-align: center;
+		}
+
+		.table-link-yellow {
+			background-color: #ffc107; /* Yellow background */
+			color: #000; /* Black text */
+		}
+
+		.table-link-yellow:hover {
+			background-color: #e0a800; /* Darker yellow for hover */
+			color: #000; /* Black text */
+		}
+
+		.table-link-teal {
+			background-color: #20c997; /* Teal green background */
+			color: #fff; /* White text */
+		}
+
+		.table-link-teal:hover {
+			background-color: #17a2b8; /* Darker teal for hover */
+			color: #fff; /* White text */
+		}
+
+		.table-link-red {
+			background-color: #dc3545; /* Red background */
+			color: #fff; /* White text */
+		}
+
+		.table-link-red:hover {
+			background-color: #c82333; /* Darker red for hover */
+			color: #fff; /* White text */
+		}
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+            z-index: 1000;
+        }
+
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 999;
+        }
+
+        .nav {
+			position: relative;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 20px;
+            background-color: #607d8b; /* Navigation Bar Background */
+            color: white;
+            font-size: 1.2rem;
+        }
+
+        .nav ul {
+            display: flex;
+            list-style: none;
+            margin: 0;
+            padding: 0;
+        }
+
+        .nav li {
+            margin: 0 10px;
+        }
+
+        .nav a {
+            text-decoration: none;
+            color: white;
+            display: flex;
+            align-items: center;
+        }
+
+        .nav a:hover {
+            color: #ff9800; /* Highlight Color */
+        }
+
+        .nav i {
+            margin-right: 8px; /* Spacing between icon and text */
+        }
+
+        .nav .logout-btn {
+            display: flex;
+            align-items: center;
+        }
+
+		.logout-container {
+			position: absolute; /* Position the container independently */
+			top: 10px; /* Adjust distance from the top */
+			right: 20px; /* Adjust distance from the right */
+			margin: 0;
+			padding: 0;
+			list-style: none;
+		}
+
+		.logout-container li {
+			margin: 0;
+		}
+
+		.logout-btn {
+			text-decoration: none;
+			color: white;
+			display: flex;
+			align-items: center;
+		}
+
+		.logout-btn:hover {
+			color: #ff9800; /* Highlight Color */
+		}
+
+		.btn-small {
+			padding: 5px 10px; /* Smaller padding */
+			font-size: 0.85rem; /* Slightly smaller font size */
+			line-height: 1.2; /* Adjust line height for compact appearance */
+		}
+
+    </style>
+    <script>
+        const remoteAPI = 'http://127.0.0.1:8000/api';
+        const businessDB = new PouchDB('businesses');
+
+		// Register Service Worker
+		if ('serviceWorker' in navigator) {
+			navigator.serviceWorker.register('/service-worker.js') // No custom scope needed for root
+				.then((registration) => {
+					console.log('Service Worker registered with scope:', registration.scope);
+				})
+				.catch((error) => {
+					console.error('Service Worker registration failed:', error);
+				});
+		}
+
+		function getCSRFToken() {
+			const cookies = document.cookie.split(';');
+			for (let cookie of cookies) {
+				const [name, value] = cookie.trim().split('=');
+				if (name === 'csrftoken') return value;
+			}
+			return null; // Return null if the token is not found
+		}
+
+		function resolveAndRetry(doc, retries = 3) {
+			if (retries === 0) {
+				console.error(`Failed to resolve conflict for document: ${doc._id}`);
+				return Promise.reject(new Error('Conflict resolution failed'));
+			}
+
+			return businessDB.get(doc._id).then((latestDoc) => {
+				// Merge `_rev` from the server
+				doc._rev = latestDoc._rev;
+				return businessDB.put(doc).catch((err) => {
+					if (err.status === 409) {
+						console.warn(`Conflict detected for ${doc._id}. Retrying...`);
+						return resolveAndRetry(doc, retries - 1);
+					}
+					throw err; // Propagate non-conflict errors
+				});
+			})
+			.catch((err) => {
+				console.error(`Error resolving conflict for ${doc._id}:`, err);
+			});
+		}
+
+		function saveToPouchDB(doc) {
+			return businessDB.put(doc).catch((err) => {
+				if (err.status === 409) {
+					console.warn(`Conflict detected for document: ${doc._id}. Resolving conflict...`);
+					return resolveAndRetry(doc);
+				}
+				console.error(`Error saving document ${doc._id}:`, err);
+				throw err;
+			});
+		}
+		
+		function validateAndSave(doc) {
+			if (!doc._id) {
+				console.warn('Missing `_id`. Generating one:', doc);
+				doc._id = `business-${doc.id || Date.now()}`;
+			}
+
+			const resolveConflict = (conflictingDoc) => {
+				return businessDB.get(doc._id).then((latestDoc) => {
+					doc._rev = latestDoc._rev; // Use the latest revision
+					return businessDB.put(doc); // Retry saving
+				});
+			};
+
+			return businessDB.put(doc).catch((err) => {
+				if (err.status === 409) {
+					console.warn(`Conflict detected for ${doc._id}. Resolving...`);
+					return resolveConflict(doc);
+				}
+				console.error(`Error saving document ${doc._id}:`, err);
+				throw err;
+			});
+		}
+		
+		function generateUniqueId(doc) {
+			if (doc._id) return doc._id; // Return existing `_id` if present
+			if (doc.id) return `business-${doc.id}`;
+			if (doc.name) return `business-${doc.name.replace(/\s+/g, '_').toLowerCase()}`;
+			return `business-${Date.now()}`; // Fallback for safety
+		}
+
+        // Sync business data
+		fetch(`${remoteAPI}/businesses/`)
+			.then((response) => response.json())
+			.then((data) => {
+				data.forEach((doc) => {
+					if (!doc._id) {
+						doc._id = `business-${doc.id}`;
+					}
+					businessDB.put(doc).then(() => {
+						console.log("Document saved successfully:", doc);
+					}).catch((err) => {
+						console.error("Error saving document:", doc, err);
+					});
+				});
+			})
+			.catch((err) => console.error("Error fetching businesses:", err));
+
+		function resolveConflict(doc) {
+			return businessDB.get(doc._id)
+				.then((latestDoc) => {
+					// Example: Merging server and local fields
+					const mergedDoc = {
+						...latestDoc,
+						...doc, // Prioritize incoming doc fields
+						_rev: latestDoc._rev, // Use the latest revision
+					};
+					console.log(`Conflict resolved for ${doc._id}. Merged document:`, mergedDoc);
+					return businessDB.put(mergedDoc); // Save merged document
+				})
+				.catch((err) => {
+					console.error(`Error resolving conflict for ${doc._id}:`, err);
+					throw err;
+				});
+		}
+
+		function validateLogo(doc) {
+			if (doc.logo && typeof doc.logo === 'string') {
+				const urlPattern = /^(https?:\/\/[^\s]+)$/;
+				if (!urlPattern.test(doc.logo)) {
+					console.warn(`Invalid logo URL for ${doc._id}: ${doc.logo}. Setting logo to null.`);
+					doc.logo = null;
+				}
+			} else if (Array.isArray(doc.logo)) {
+				console.warn(`Unexpected array for logo in ${doc._id}. Flattening or setting to null.`);
+				doc.logo = doc.logo.length > 0 ? doc.logo[0] : null; // Take the first element or set to null
+			} else {
+				doc.logo = null; // Ensure logo is null if undefined or invalid
+			}
+			return doc;
+		}
+
+		function validatePayload(doc) {
+			const requiredFields = [
+				'id', 'name', 'subscription_expiry', 'logo', 'is_active',
+				'registration_date', 'category', 'subscription_plan', 'owners', 'users'
+			];
+
+			const validatedDoc = {};
+			let isValid = true;
+
+			requiredFields.forEach((field) => {
+				if (doc[field] === undefined || doc[field] === null) {
+					console.warn(`Field "${field}" is missing or null in document ${doc._id || 'unknown'}.`);
+					isValid = false;
+				} else {
+					validatedDoc[field] = doc[field];
+				}
+			});
+
+			// Ensure `logo` is properly set
+			if (validatedDoc.logo && typeof validatedDoc.logo === 'string') {
+				const urlPattern = /^(https?:\/\/[^\s]+)$/;
+				if (!urlPattern.test(validatedDoc.logo)) {
+					console.warn(`Invalid logo URL for document ${doc._id}. Setting logo to null.`);
+					validatedDoc.logo = null;
+				}
+			} else {
+				validatedDoc.logo = null; // Fallback for missing or invalid logo
+			}
+
+			return isValid ? validatedDoc : null;
+		}
+
+		function checkForServerUpdates() {
+			fetch(`${remoteAPI}/businesses/`)
+				.then((response) => response.json())
+				.then((serverData) => {
+					const updatePromises = serverData.map((serverDoc) => {
+						const localDocId = `business-${serverDoc.id}`;
+
+						return businessDB.get(localDocId)
+							.then((localDoc) => {
+								// Compare local and server revision
+								if (localDoc._rev !== serverDoc._rev) {
+									console.log(`Change detected for ${localDocId}. Updating local cache...`);
+									const updatedDoc = {
+										...serverDoc,
+										_id: localDocId,
+										synced: true,
+										lastSynced: new Date().toISOString(),
+									};
+									return businessDB.put(updatedDoc);
+								}
+								console.log(`No changes detected for ${localDocId}.`);
+								return null; // No updates required
+							})
+							.catch((err) => {
+								if (err.status === 404) {
+									console.log(`New document detected on server: ${localDocId}`);
+									const newDoc = {
+										...serverDoc,
+										_id: localDocId,
+										synced: true,
+										lastSynced: new Date().toISOString(),
+									};
+									return businessDB.put(newDoc);
+								}
+								console.error(`Error checking document ${localDocId}:`, err);
+							});
+					});
+
+					return Promise.all(updatePromises);
+				})
+				.catch((err) => {
+					console.error('Error fetching server data:', err);
+				});
+		}
+		
+		let syncInProgress = false;
+		function syncBusinesses() {
+			if (syncInProgress) return;
+
+			syncInProgress = true;
+
+			businessDB.allDocs({ include_docs: true })
+				.then((result) => {
+					const unsyncedDocs = result.rows
+						.map((row) => row.doc)
+						.filter((doc) => doc.modified)
+						.map((doc) => validatePayload(doc))
+						.filter((validatedDoc) => validatedDoc !== null); // Skip invalid docs
+
+					console.log(`Syncing ${unsyncedDocs.length} valid documents...`);
+
+					const syncPromises = unsyncedDocs.map((doc) => {
+						const endpoint = `${remoteAPI}/businesses/${doc.id}/`;
+
+						console.log(`Payload for ${doc.id}:`, JSON.stringify(doc, null, 2));
+
+						return fetch(endpoint, {
+							method: 'PUT',
+							headers: {
+								'Content-Type': 'application/json',
+								'X-CSRFToken': getCSRFToken(),
+							},
+							body: JSON.stringify(doc),
+						})
+							.then((response) => {
+								if (!response.ok) throw new Error(`Failed to sync document ${doc.id}`);
+								return response.json();
+							})
+							.then((serverDoc) => {
+								doc._rev = serverDoc._rev;
+								doc.synced = true;
+								doc.modified = false;
+								return businessDB.put(doc);
+							})
+							.catch((err) => {
+								if (err.message.includes('Document update conflict')) {
+									console.warn(`Conflict detected for ${doc._id}. Resolving...`);
+									return resolveAndRetry(doc);
+								}
+								console.error(`Error syncing document ${doc.id}:`, err.message);
+							});
+					});
+
+					return Promise.all(syncPromises);
+				})
+				.catch((err) => {
+					console.error('Error fetching unsynced documents:', err);
+				})
+				.finally(() => {
+					syncInProgress = false;
+				});
+		}
+
+		if (navigator.onLine) {
+			let syncTimeout = null;
+
+			clearTimeout(syncTimeout); // Clear any existing timeout to avoid multiple triggers
+			syncTimeout = setTimeout(() => {
+				console.log('Triggering initial sync after load.');
+				syncBusinesses(); // Trigger sync after the delay
+			}, 3000); // Delay sync for 3 seconds
+		}
+
+		setInterval(() => {
+			if (navigator.onLine) {
+				console.log('Checking for server updates...');
+				checkForServerUpdates();
+			}
+		}, 60000); // Check every 60 seconds
+
+		let syncTimeout = null;
+		function scheduleSync() {
+			if (syncTimeout) {
+				clearTimeout(syncTimeout);
+			}
+			syncTimeout = setTimeout(() => {
+				console.log('Triggering batch sync...');
+				syncBusinesses(); // Ensure this function is also defined in the same scope
+			}, 5000); // Delay by 5 seconds
+		}
+
+		// Listen for changes in the database
+		businessDB.changes({
+			since: 'now',
+			live: true,
+		}).on('change', (change) => {
+			businessDB.get(change.id, { conflicts: true })
+				.then((doc) => {
+					if (doc._conflicts && doc._conflicts.length > 0) {
+						console.warn(`Conflicts detected for ${change.id}. Resolving...`);
+						return resolveAndRetry(doc);
+					}
+				})
+				.catch((err) => console.error(`Error handling change for ${change.id}:`, err));
+		});
+
+		// Offline data loading
+		if (!navigator.onLine) {
+			businessDB.allDocs({ include_docs: true })
+				.then((result) => {
+					const offlineData = result.rows.map((row) => row.doc);
+					renderBusinesses(offlineData);
+				})
+				.catch((err) => console.error("Error loading businesses from PouchDB:", err));
+		}
+
+		function renderBusinesses(businesses) {
+			const tableBody = document.querySelector('table tbody');
+			const fragment = document.createDocumentFragment();
+			tableBody.innerHTML = ""; // Clear existing content
+
+			businesses.forEach((business) => {
+				const row = document.createElement('tr');
+				const logoHTML = business.logo
+					? `<img src="${business.logo}" alt="Logo" style="height: 50px; width: auto;">`
+					: "No Logo";
+
+				row.innerHTML = `
+					<td>${logoHTML}</td>
+					<td>${business.name}</td>
+					<td>${business.owners ? business.owners.join(", ") : "N/A"}</td>
+					<td>${business.users ? business.users.length : 0}</td>
+					<td>${business.subscription_plan}</td>
+					<td>${business.expiry_date || "N/A"}</td>
+					<td>${business.currency || "USD"}</td>
+					<td>
+						<a href="/dashboard/?business_id=${business.id}" class="table-link table-link-teal">Go to Dashboard</a>
+					</td>
+				`;
+				fragment.appendChild(row);
+			});
+
+			tableBody.appendChild(fragment);
+		}
+
+        function openModal(modalId) {
+            document.getElementById(modalId).style.display = 'block';
+            document.getElementById('modal-overlay').style.display = 'block';
+        }
+
+		function openEditModal(businessId, businessName, subscriptionPlanId, isActive, logoUrl, currency) {
+			// Decode or sanitize the name
+			const safeBusinessName = businessName.replace(/\\'/g, "'"); // Convert escaped quotes back for display
+
+			document.getElementById('edit-business-form').action = `/sales/businesses/${businessId}/edit/`;
+			document.getElementById('edit-name').value = businessName;
+
+			// Set subscription plan
+			const subscriptionPlanDropdown = document.getElementById('edit-subscription_plan');
+			if (subscriptionPlanDropdown) {
+				subscriptionPlanDropdown.value = subscriptionPlanId;
+			}
+
+			// Set currency
+			const currencyDropdown = document.getElementById('edit-currency');
+			if (currencyDropdown) {
+				currencyDropdown.value = currency || 'USD';
+			}
+
+			// Handle the is_active field (if present)
+			const isActiveCheckbox = document.getElementById('edit-is_active');
+			if (isActiveCheckbox) {
+				isActiveCheckbox.checked = isActive;
+			}
+
+			// Handle the logo preview
+			const logoPreview = document.getElementById('edit-logo-preview');
+			const noLogoText = document.getElementById('no-logo-text');
+			if (logoUrl) {
+				logoPreview.src = logoUrl;
+				logoPreview.style.display = "block";
+				noLogoText.style.display = "none";
+			} else {
+				logoPreview.style.display = "none";
+				noLogoText.style.display = "block";
+			}
+
+			// Open the modal
+			openModal('edit-business-modal');
+		}
+
+		function previewNewLogo(event) {
+			const file = event.target.files[0];
+			const logoPreview = document.getElementById('edit-logo-preview');
+			const noLogoText = document.getElementById('no-logo-text');
+
+			if (file) {
+				const reader = new FileReader();
+				reader.onload = function (e) {
+					logoPreview.src = e.target.result; // Set preview to the selected file
+					logoPreview.style.display = "block";
+					noLogoText.style.display = "none";
+				};
+				reader.readAsDataURL(file);
+			} else {
+				logoPreview.style.display = "none";
+				noLogoText.style.display = "block";
+			}
+		}
+
+        function closeModal(modalId) {
+            document.getElementById(modalId).style.display = 'none';
+            document.getElementById('modal-overlay').style.display = 'none';
+        }
+
+        function closeAllModals() {
+            const modals = document.querySelectorAll('.modal');
+            modals.forEach(modal => modal.style.display = 'none');
+            closeModal('modal-overlay');
+        }
+		
+		// Function to confirm logout
+		function confirmLogout() {
+			const userConfirmed = confirm("Are you sure you want to log out from the app?");
+			if (userConfirmed) {
+				// If user clicks "Yes," submit the logout form
+				//document.getElementById('logout-form').submit();
+
+				// Redirect to login page instead of clearing offline data
+				console.log("Logging out and redirecting to login page.");
+				window.location.href = '/accounts/login/';
+			}
+			// If user clicks "Cancel," do nothing (stay on the page)
+		}	
+
+    </script>
+</head>
+<body>
+	<nav class="nav">
+		<ul class="logout-container">
+			<li>
+				<form id="logout-form" action="{% url 'logout' %}" method="post" style="display:none;">
+					{% csrf_token %}
+					<button type="submit"></button>
+				</form>
+				<a href="#" onclick="confirmLogout();" class="logout-btn">
+					<i class="fas fa-sign-out-alt"></i> <!-- Logout Icon -->
+				</a>
+			</li>
+		</ul>
+	</nav>	
+	<h1>____Hi {{ request.user.first_name|default:request.user.username }}, Happy New Year! Welcome.___</h1>
+    <h2 style="text-align: center; text-decoration: underline;">Manage Businesses</h2>
+	{% if messages %}
+		<ul class="messages">
+			{% for message in messages %}
+				<li{% if message.tags %} class="{{ message.tags }}"{% endif %}>{{ message }}</li>
+			{% endfor %}
+		</ul>
+	{% endif %}
+    <!-- Add Business Button -->
+    <button onclick="openModal('add-business-modal');" class="btn btn-success">
+        Add New Business
+    </button>
+
+    <!-- Add Business Modal -->
+    <div id="add-business-modal" class="modal">
+        <form method="post" action="{% url 'add-business' %}">
+            {% csrf_token %}
+			
+            <h2>Add New Business</h2>
+            <label for="name">Business Name:</label>
+            <input type="text" name="name" id="name" required>
+            <br>
+						
+            <label for="subscription_plan">Subscription Plan:</label>		
+			<select name="subscription_plan" id="subscription_plan" required>
+			  {% for plan in subscription_plans %}
+				<option value="{{ plan.id }}">{{ plan.subscription_type }} - {{ plan.frequency }}</option>
+			  {% empty %}
+				<option value="" disabled>No Subscription Plans Available</option>
+			  {% endfor %}
+			</select>
+            <br>		
+
+			<!-- Default Currency (Hidden Field) -->
+			<input type="hidden" name="currency" id="edit-currency" value="USD">
+
+			<!-- Logo -->
+			<label for="logo">Business Logo:</label>
+			<input type="file" name="logo" id="logo" accept="image/*">
+			<br>
+
+			<!-- Is Active -->
+			<label for="is_active">Is Active:</label>
+			<input type="checkbox" name="is_active" id="is_active" checked>
+			<br>
+
+            <button type="submit" class="btn btn-success">Save</button>
+            <button type="button" class="btn btn-danger" onclick="closeModal('add-business-modal');">
+                Cancel
+            </button>
+        </form>
+    </div>
+
+    <!-- Edit Business Modal -->
+	<div id="edit-business-modal" class="modal">
+		<form id="edit-business-form" method="post" action="" enctype="multipart/form-data">
+			{% csrf_token %}
+			<h2>Edit Business</h2>
+
+			<!-- Business Name -->
+			<label for="edit-name">Business Name:</label>
+			<input type="text" name="name" id="edit-name" required>
+			<br>
+
+			<!-- Subscription Plan -->
+			<label for="edit-subscription_plan">Subscription Plan:</label>
+			<select name="subscription_plan" id="edit-subscription_plan" required>
+				{% for plan in subscription_plans %}
+					<option value="{{ plan.id }}">{{ plan.subscription_type }}</option>
+				{% endfor %}
+			</select>
+			<br>
+
+			<!-- Default Currency (Hidden Field) -->
+			<input type="hidden" name="currency" id="edit-currency" value="USD">
+			
+			<!-- Display Existing Logo -->
+			<label for="current-logo">Current Logo:</label>
+			<div id="current-logo">
+				<img id="edit-logo-preview" src="" alt="Business Logo"
+					 style="height: 100px; width: auto; display: none; cursor: pointer;"
+					 onclick="document.getElementById('edit-logo').click();">
+				<p id="no-logo-text" style="display: none; cursor: pointer;"
+				   onclick="document.getElementById('edit-logo').click();">
+					No Logo Available
+				</p>
+			</div>
+			<input type="file" name="logo" id="edit-logo" accept="image/*" style="display: none;" onchange="previewNewLogo(event);">
+			<br>
+
+			<!-- Is Active -->
+			<label for="edit-is_active">Is Active:</label>
+			<input type="checkbox" name="is_active" id="edit-is_active">
+			<br>
+
+			<button type="submit" class="btn btn-success">Save</button>
+			<button type="button" class="btn btn-danger" onclick="closeModal('edit-business-modal');">Cancel</button>
+		</form>
+	</div>
+
+    <!-- Modal Overlay -->
+    <div id="modal-overlay" class="modal-overlay" onclick="closeAllModals();"></div>
+
+    <!-- Business List Table -->
+    <table>
+        <thead>
+            <tr>
+				<th>Logo</th>
+                <th>Business Name</th>
+                <th>Owner(s)</th>
+                <th>No. of Users</th>
+                <th>Subscription Plan</th>
+                <th>Expiry Date</th>
+				<th>Converted Amount</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for business in businesses %}
+            <tr>
+				<td>
+					{% if business.logo %}
+						<img src="{{ business.logo.url }}" alt="{{ business.name }} Logo" style="height: 50px; width: auto;">
+					{% else %}
+						No Logo
+					{% endif %}
+				</td>				
+                <td>{{ business.name }}</td>
+                <td>
+                    {% for owner in business.owners.all %}
+                        {{ owner.get_full_name|default:owner.username }}
+                        {% if not forloop.last %}, {% endif %}
+                    {% endfor %}
+                </td>
+                <td>{{ business.users.count }}</td>
+                <td>{{ business.subscription_plan.subscription_type }}</td>
+                <td>{{ business.subscription_expiry|date:"Y-m-d" }}</td>
+				<td>
+					{% with business.subscription_plan.amount|floatformat:2 as amount_in_usd %}
+					{% with amount_in_usd|currency_conversion:"USD"|floatformat:2 as converted %}
+					{{ converted }} {{ business.subscription_plan.currency }}
+					{% endwith %}
+					{% endwith %}
+				</td>
+                <td>
+                    <a href="{% url 'dashboard' %}?business_id={{ business.id }}" 
+                       class="table-link table-link-teal">Go to Dashboard
+					</a>
+					   
+					<a href="javascript:void(0);"
+					   class="table-link table-link-yellow"
+						onclick="openEditModal(
+							{{ business.id }},
+							'{{ business.name|addslashes }}',
+							'{{ business.subscription_plan.id|default:''|escapejs }}',
+							{{ business.is_active|yesno:'true,false' }},
+							{% if business.logo %}'{{ business.logo.url|escapejs }}'{% else %}null{% endif %},
+							'{{ business.currency|default:'USD'|escapejs }}')">
+						Edit
+					</a>
+
+                    <a href="#" class="table-link table-link-red"
+                       onclick="return confirm('Are you sure you want to deactivate this business?');">
+                       {% if business.is_active %}Deactivate{% else %}Activate{% endif %}
+                    </a>					
+                </td>
+            </tr>
+            {% empty %}
+            <tr>
+                <td colspan="6" style="text-align: center;">No businesses found.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <footer style="position: fixed; bottom: 10px; right: 10px; font-size: 12px; color: #555;">
+        Powered by <strong>DigiServe</strong>
+    </footer>
+</body>
+</html>

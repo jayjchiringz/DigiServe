@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Add New Business</title>
+    {% load static %}
+    <link rel="stylesheet" href="{% static 'css/style_2.css' %}">
+</head>
+<body>
+    <h1>Add New Business</h1>
+    <form method="post" enctype="multipart/form-data">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit" class="btn btn-success">Save Business</button>
+    </form>
+    <a href="{% url 'business-list' %}" class="btn btn-secondary">Back to Business List</a>
+
+    <footer style="position: fixed; bottom: 10px; right: 10px; font-size: 12px; color: #555;">
+        Powered by <strong>DigiServe</strong>
+    </footer>
+
+</body>
+</html>

@@ -1,0 +1,471 @@
+{% extends 'base.html' %}
+{% load static %}
+{% load currency_filters %}
+{% block header %}{{ selected_business.name }} - Process New Sale {% endblock %}
+{% block content %}
+		<script>
+			function getCSRFToken() {
+				let token = null;
+
+				// Check cookies first
+				document.cookie.split(";").forEach(cookie => {
+					let [name, value] = cookie.trim().split("=");
+					if (name === "csrftoken") token = value;
+				});
+
+				// Check hidden input field if not found in cookies
+				if (!token) {
+					const csrfTokenInput = document.querySelector("[name=csrfmiddlewaretoken]");
+					if (csrfTokenInput) token = csrfTokenInput.value;
+				}
+
+				if (!token) console.error("⚠️ CSRF token not found. Requests may fail!");
+
+				return token;
+			}
+			
+			// Initialize PouchDB for offline sales
+			const salesDB = new PouchDB('digiserve_sales');
+
+			// Function to save a sale to PouchDB
+			function saveSaleLocally(saleData) {
+				saleData.items = Array.from(document.querySelectorAll('select[name="item"]'))
+					.map(select => select.value)
+					.filter(value => value);
+
+				saleData.quantities = Array.from(document.querySelectorAll('input[name="quantity"]'))
+					.map(input => parseInt(input.value, 10))
+					.filter(value => !isNaN(value) && value > 0);
+
+				saleData.unit_selling_prices = Array.from(document.querySelectorAll('input[name="unit_selling_price"]'))
+					.map(input => parseCurrency(input.value))
+					.filter(value => value > 0);
+
+				saleData.total_amount = parseCurrency(document.getElementById('total').value);
+				saleData.grand_total = parseCurrency(document.getElementById('grand_total').value);
+				saleData.tip = parseCurrency(document.getElementById('tip').value) || 0;
+
+				if (!saleData.receipt_no) saleData.receipt_no = `R-${Date.now()}`;
+				const saleId = `sale-${Date.now()}`;
+				saleData._id = saleId;
+
+				return salesDB.put(saleData).then(() => {
+					console.log("📝 Saved offline sale:", saleData);
+				}).catch(err => {
+					console.error("⚠️ Error saving sale locally:", err);
+				});
+			}
+
+			// Function to sync unsynced sales
+			function syncSales() {
+				if (!navigator.onLine) {
+					console.log("⚠️ App is offline. Skipping sync.");
+					return; // Prevent sync if the app is offline
+				}
+				
+				salesDB.allDocs({ include_docs: true })
+					.then((result) => {
+						const unsyncedSales = result.rows
+							.map((row) => row.doc)
+							.filter((doc) => !doc.synced); // Filter out already synced sales
+
+						console.log(`Syncing ${unsyncedSales.length} unsynced sales...`);
+
+						const syncPromises = unsyncedSales.map((sale) => {
+							return fetch('/sales/new/', {
+								method: 'POST',
+								headers: {
+									'Content-Type': 'application/json',
+									'X-CSRFToken': getCSRFToken(),
+								},
+								body: JSON.stringify(sale),
+							})
+								.then((response) => {
+									if (!response.ok) {
+										throw new Error(`Failed to sync sale: ${response.statusText}`);
+									}
+									return response.json();
+								})
+								.then(() => {
+									sale.synced = true; // Mark sale as synced
+									return salesDB.put(sale);
+								})
+								.catch((err) => {
+									console.error(`Error syncing sale:`, err);
+								});
+						});
+
+						return Promise.all(syncPromises);
+					})
+					.then(() => {
+						console.log('All unsynced sales have been processed.');
+					})
+					.catch((err) => {
+						console.error('Error syncing sales:', err);
+					});
+			}
+
+			// Save sale directly to the backend if online
+			function submitSale(saleData) {
+				if (navigator.onLine) {
+					console.log("🌐 Online. Sending sale directly to backend.");
+
+					const payload = {
+						table: saleData.table,
+						payment_mode: saleData.payment_mode,
+						customer_name: saleData.customer_name || "",
+						item: saleData.items[0],  // Single item ID
+						quantity: saleData.quantities[0],  // Corresponding quantity
+						unit_selling_price: saleData.unit_selling_prices[0],  // Corresponding price
+						total_amount: saleData.total_amount,
+						tip: saleData.tip,
+						grand_total: saleData.grand_total,
+						status: saleData.status,
+						receipt_no: saleData.receipt_no,
+						user: saleData.user,
+					};
+
+					fetch("/api/sales/", {
+						method: "POST",
+						headers: {
+							"Content-Type": "application/json",
+							"X-CSRFToken": getCSRFToken(),
+						},
+						body: JSON.stringify(payload),
+					})
+						.then((response) => {
+							if (!response.ok) {
+								throw new Error(`HTTP error! status: ${response.status}`);
+							}
+							return response.json();
+						})
+						.then((data) => {
+							console.log("✅ Backend Response:", data);
+							
+							// Open receipt in a new tab
+							const receiptUrl = `/sales/receipt/${data.receipt_no}/`; // Adjust URL as needed
+							window.open(receiptUrl, "_blank");
+
+							// Refresh the current page
+							alert("Sale submitted successfully! Preparing for the next sale.");
+							location.reload();
+						})
+						.catch((error) => {
+							console.error("❌ Fetch Error:", error);
+							alert("Error submitting sale. Please try again.");
+						});
+				} else {
+					console.log("⚠️ Offline. Saving sale locally.");
+					saveSaleLocally(saleData).then(() => {
+						alert("Sale saved locally. It will sync once online.");
+					});
+				}
+			}
+			
+			// Sync sales when the app comes back online
+			window.addEventListener('online', () => {
+				console.log('Back online! Syncing sales...');
+				syncSales();
+			});
+	
+			function formatCurrency(value) {
+				return 'Kshs ' + parseFloat(value).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,');
+			}
+
+			function parseCurrency(value) {
+				return parseFloat(value.replace(/[^\d.]/g, "")) || 0.0;
+			}
+
+			function updateGrandTotal() {
+				const totalBill = parseCurrency(document.getElementById('total').value);
+				const tipAmount = parseCurrency(document.getElementById('tip').value) || 0;
+				const grandTotal = totalBill + tipAmount;
+				document.getElementById('grand_total').value = formatCurrency(grandTotal);
+			}
+
+			function updateTotal() {
+				let total = 0;
+				document.querySelectorAll('.item-row').forEach(row => {
+					const quantity = parseInt(row.querySelector('.quantity').value, 10) || 0;
+					const price = parseCurrency(row.querySelector('.unit_selling_price').value) || 0;
+					total += quantity * price;
+				});
+				document.getElementById('total').value = formatCurrency(total);
+				updateGrandTotal();
+			}
+
+			function updateUnitSellingPrice(selectElement) {
+				const itemRow = selectElement.closest('.item-row');
+				const selectedOption = selectElement.options[selectElement.selectedIndex];
+
+				// Update Unit Selling Price and Stock
+				const price = selectedOption.getAttribute('data-unit_selling_price');  // ✅ Fetch the correct attribute
+				console.log("Price:", selectedOption.getAttribute('data-unit_selling_price'));
+				const stock = selectedOption.getAttribute('data-stock');
+				console.log("Stock:", selectedOption.getAttribute('data-stock'));				
+
+				const priceInput = itemRow.querySelector('.unit_selling_price');
+				if (priceInput) {
+					priceInput.value = price;
+				} else {
+					console.error("❌ Missing input with class 'unit_selling_price' in itemRow:", itemRow);
+				}
+
+				itemRow.querySelector('.display-price').innerText = formatCurrency(price);
+				itemRow.querySelector('.quantity').max = stock;
+				itemRow.querySelector('.quantity').setAttribute('data-max', stock); // For further validation
+
+				// Update the item image
+				updateItemImage(itemRow, selectedOption);
+				updateTotal();
+			}
+
+			function updateItemImage(itemRow, selectedOption) {
+				const imageUrl = selectedOption.getAttribute('data-image');
+				console.log("Selected image URL:", imageUrl); // Debug log
+				const itemImageElement = itemRow.querySelector('.item-image');
+				const noImageMessageElement = itemRow.querySelector('.no-image-message');
+
+				if (imageUrl && imageUrl.trim() !== "") {
+					itemImageElement.src = imageUrl;
+					itemImageElement.style.display = "block";
+					noImageMessageElement.style.display = "none";
+				} else {
+					itemImageElement.style.display = "none";
+					noImageMessageElement.style.display = "block";
+				}
+			}
+
+			function validateQuantity(quantityInput) {
+				const max = quantityInput.getAttribute('data-max');
+				if (parseInt(quantityInput.value) > parseInt(max)) {
+					alert(`Quantity exceeds available stock (${max} units available).`);
+					quantityInput.value = max; // Set to maximum allowed stock
+				}
+				updateTotal();
+			}
+
+			function addItemRow() {
+				const itemRow = document.querySelector('.item-row').cloneNode(true);
+				const selectElement = itemRow.querySelector('.item');
+				
+				itemRow.querySelector('.quantity').value = 1;
+				itemRow.querySelector('.unit_selling_price').value = "";
+				itemRow.querySelector('.display-price').innerText = formatCurrency(0);
+				itemRow.querySelector('.item-image').style.display = "none";
+				itemRow.querySelector('.item-image').src = "";				
+				itemRow.querySelector('.no-image-message').style.display = "block";
+
+				// Clear the selected option
+				selectElement.value = "";
+
+				// Attach event listener to the new dropdown
+				selectElement.addEventListener('change', function () {
+					updateUnitSellingPrice(this);
+				});
+				
+				document.getElementById('items-container').appendChild(itemRow);
+				updateTotal();
+			}
+
+			function confirmSubmission() {
+				const totalBill = document.getElementById('total').value;
+				const status = document.getElementById('status').value;
+				const confirmation = confirm(`Are you sure you want to submit the sale of ${totalBill} as ${status}?`);
+				if (confirmation) {
+					document.querySelector('form').submit(); // Submit the form if confirmed
+				} else {
+					return false; // Prevent form submission if not confirmed
+				}
+			}
+
+			function initializeDropdownListeners() {
+				// Attach onchange event listener to item dropdowns
+				document.querySelectorAll('.item').forEach(function (selectElement) {
+					selectElement.addEventListener('change', function () {
+						const itemRow = selectElement.closest('.item-row');
+						updateItemImage(itemRow, selectElement.options[selectElement.selectedIndex]);
+						updateUnitSellingPrice(this);
+					});
+				});
+			}
+
+			document.addEventListener("DOMContentLoaded", function () {
+				// Ensure the form exists before trying to attach event listeners
+				const createSaleForm = document.getElementById('create-sale-form');
+				if (!createSaleForm) {
+					console.error("The #create-sale-form element does not exist in the DOM.");
+					return; // Exit if form is not found
+				}
+
+				// Attach event listener for form submission
+				createSaleForm.addEventListener('submit', function (e) {
+
+					// Define formData properly
+					const formData = new FormData(this);
+
+					e.preventDefault(); // Prevent default form submission
+					// Capture selected items
+					const items = Array.from(document.querySelectorAll('select[name="item"]'))
+						.map(select => select.value)
+						.filter(value => value); // Ensure non-empty values
+
+					// Capture entered quantities
+					const quantities = Array.from(document.querySelectorAll('input[name="quantity"]'))
+						.map(input => parseInt(input.value, 10))
+						.filter(value => !isNaN(value) && value > 0); // Ensure valid numbers
+
+					// Fix price extraction to use unit_selling_price
+					const prices = Array.from(document.querySelectorAll('input[name="unit_selling_price"]'))
+						.map(input => parseFloat(input.value))
+						.filter(value => !isNaN(value) && value > 0);
+					
+					// Convert form data to JSON
+					const saleData = {
+						table: formData.get("table"),
+						payment_mode: formData.get("payment_mode"),
+						customer_name: formData.get("customer_name") || "",
+						items: items, // Flatten items array to extract IDs
+						quantities: quantities, // Send as a flat array
+						unit_selling_prices: prices, // Send as a flat array
+						total_amount: parseFloat(formData.get("total").replace(/[^\d.]/g, "")) || 0,
+						tip: parseFloat(formData.get("tip")) || 0,
+						grand_total: parseFloat(formData.get("grand_total").replace(/[^\d.]/g, "")) || 0,
+						status: formData.get("status"),
+						receipt_no: formData.get("receipt_no") || `${Date.now()}`,
+						user: formData.get("user"),
+					};
+
+					console.log("🚀 Final Payload Before Sending:", JSON.stringify(saleData, null, 2));
+					
+					// Submit sale based on online or offline state
+					submitSale(saleData, formData);
+				});
+			});		
+		</script>			
+		
+		<style>		
+			.item-image-container {
+				display: flex;
+				justify-content: center; /* Horizontal alignment */
+				align-items: center;    /* Vertical alignment */
+				height: 100px;          /* Set a consistent height for the container */
+				width: 100%;            /* Optional: adjust as needed */
+				overflow: hidden;       /* Prevent image overflow */
+				border: 1px solid #ddd; /* Optional: Add a border */
+				background-color: #f9f9f9; /* Optional: Add a background color */
+			}
+
+			.item-image {
+				max-height: 100%; /* Ensure the image fits within the container height */
+				max-width: 100%;  /* Ensure the image fits within the container width */
+			}		
+		</style>		
+		{% if messages %}
+			<ul class="messages">
+				{% for message in messages %}
+					<li{% if message.tags %} class="{{ message.tags }}"{% endif %}>{{ message }}</li>
+				{% endfor %}
+			</ul>
+		{% endif %}
+
+		<!--<form method="post" onsubmit="return confirmSubmission();">-->
+		<form method="post" id="create-sale-form">
+			{% csrf_token %}
+			<input type="hidden" name="user" value="{{ request.user.id }}">
+			<input type="hidden" name="business" id="business" value="{{ selected_business.id }}">
+
+			<!-- Select Table -->
+			<label for="table">Table:</label>
+			<select name="table" id="table" required>
+				<option value="">Select a Table</option>
+				{% for table in tables %}
+					<option value="{{ table.id }}">{{ table.name }}</option>
+				{% endfor %}
+			</select><br><br>
+			
+			<!-- Mode of Payment -->
+			<label for="payment_mode">Mode of Payment:</label>
+			<select name="payment_mode" id="payment_mode" onchange="toggleMpesaNumber()"  default="Cash">
+				<option value="Cash">Cash</option>
+				<option value="MPesa">MPesa</option>
+				<option value="Credit/Debit Card">Credit/Debit Card</option>
+			</select><br><br>
+
+			<!-- Add MPesa Number Field -->
+			<div id="mpesa-number-container" style="display: none;">
+				<label for="mpesa_number">MPesa Number:</label>
+				<input type="text"
+					   name="mpesa_number"
+					   id="mpesa_number"
+					   placeholder="254XXXXXXXXX"
+					   pattern="^254\d{9}$"
+					   title="Enter a valid MPesa number in the format: 254XXXXXXXXX"><br><br>
+			</div>
+			<script>
+				function toggleMpesaNumber() {
+					const paymentMode = document.getElementById('payment_mode').value;
+					const mpesaNumberContainer = document.getElementById('mpesa-number-container');
+					mpesaNumberContainer.style.display = paymentMode === 'MPesa' ? 'block' : 'none';
+				}
+			</script>
+
+			<!-- Customer Information -->
+			<label for="customer_name">Customer Name (optional):</label>
+			<input type="text" name="customer_name" id="customer_name"><br><br>
+
+			<!-- Items and Quantities -->
+			<div id="items-container">
+				<div class="item-row">
+					<label for="item">Item:</label>
+					<select name="item" class="item" onchange="updateUnitSellingPrice(this)">
+						<option value="">Select an item</option>
+						{% for item in items %}
+							<option value="{{ item.id }}" 
+									data-unit_selling_price="{{ item.unit_selling_price|floatformat:2 }}"
+									data-stock="{{ item.stock }}"
+									data-image="{{ item.image }}">
+								{{ item.name }} ({{ item.stock }} units available)
+							</option>
+						{% endfor %}
+					</select>
+
+					<label for="quantity">Quantity:</label>
+					<input type="number" name="quantity" class="quantity" min="1" value="1" oninput="updateTotal()">
+
+					<label for="unit_selling_price">Unit Selling Price:</label>
+					<span class="display-price">0.00</span>
+
+					<input type="hidden" class="unit_selling_price" name="unit_selling_price" value=""><br>
+					
+					<!-- Item Image Display -->
+					<div class="item-image-container">
+						<img src="" alt="No image for the product." class="item-image" style="display: none;">
+						<span class="no-image-message" style="display: none;">No image for the product.</span>
+					</div><br><br>
+				</div>
+			</div>
+
+			<button type="button" onclick="addItemRow()">Add Another Item</button><br><br>
+
+			<!-- Total Bill -->
+			<label for="total">Total Bill:</label>
+			<input type="text" id="total" name="total" readonly><br><br>
+
+			<!-- Tip Input -->
+			<label for="tip">Tip Amount:</label>
+			<input type="number" id="tip" name="tip" min="0" step="1" value="0" oninput="updateGrandTotal()"><br><br>
+
+			<!-- Grand Total -->
+			<label for="grand_total">Grand Total:</label>
+			<input type="text" id="grand_total" name="grand_total" readonly><br><br>
+
+			<!-- Payment Status -->
+			<label for="status">Status:</label>
+			<select name="status" id="status">
+				<option value="Unpaid">Unpaid</option>
+				<option value="Paid">Paid</option>
+			</select><br><br>
+			<button type="submit">Submit</button>
+		</form>
+{% endblock %}

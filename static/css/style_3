@@ -1,0 +1,254 @@
+		// Toggle navigation menu
+		function toggleNav() {
+			const nav = document.querySelector('.dashboard-nav');
+			const content = document.querySelector('.content');
+			nav.classList.toggle('collapsed');
+			content.classList.toggle('collapsed');
+		}
+
+    <style>
+        /* Set up the layout using flexbox */
+		* {
+			margin: 0;
+			padding: 0;
+			box-sizing: border-box;
+		}
+
+        .dashboard-container {
+            display: flex !important;
+			flex-direction: row !important;
+            min-height: 100vh !important;
+            width: 100% !important;
+            overflow: hidden !important;  /* Prevent overflow */
+        }
+
+        /* Preserve the original theme for the navigation */
+        .dashboard-nav {
+            width: 250px !important;
+            background-color: #607d8b !important;  /* Keep your original navigation color */
+            color: #fff !important;  /* White text */
+            transition: width 0.3s ease-in-out !important;  /* Smooth transition */
+            padding: 20px 0 !important;
+        }
+
+        /* Collapsed navigation */
+        .dashboard-nav.collapsed {
+            width: 60px !important;  /* Shrink the width */
+			transform: translateX(0) !important;
+			pointer-events: auto; /* Enable interactions */
+        }
+
+		.dashboard-nav ul {
+			list-style-type: none; /* Remove bullets */
+			padding: 0;
+			margin: 0;
+			display: flex;
+			flex-direction: column;
+		}
+
+        /* Hide Submenus by Default */
+        .dashboard-nav ul ul {
+            display: block; !important;
+            margin-top: 10px !important;
+            padding-left: 15px !important;
+        }
+
+		.dashboard-nav ul li {
+			padding: 10px 20px;
+			border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+		}
+
+		.dashboard-nav ul li a {
+			color: #fff;
+			text-decoration: none;
+			display: block;
+		}
+
+        .dashboard-nav ul li:hover ul {
+            display: block !important;
+        }
+
+        /* Preserve the theme of the toggle button */
+        .toggle-btn {
+            position: fixed !important;
+            top: 20px !important;
+            left: 275px !important;
+            width: 40px !important;
+            height: 40px !important;
+            background-color: #607d8b !important;  /* Original button color */
+            color: #fff !important;
+            border: none !important;
+            cursor: pointer !important;
+            transition: left 0.3s ease !important;
+            border-radius: 20% !important;
+            z-index: 1000 !important;
+        }
+
+        /* Move toggle button when navigation is collapsed */
+        .dashboard-nav.collapsed ~ .toggle-btn {
+            left: 85px !important;  /* Adjusted to fit the collapsed nav */
+        }
+
+        /* Content area */
+        .content {
+            flex-grow: 1 !important;
+            padding: 20px !important;
+			margin-left: 250px !important;  /* Match expanded nav width */
+            transition: margin-left 0.3s ease-in-out !important;
+            background-color: #f4f4f4 !important;  /* Match your theme */
+			z-index: 1000 !important; 
+        }
+		
+
+        /* Content adjustment when navigation is collapsed */
+        .content.collapsed {
+            margin-left: 60px !important;  /* Reduced margin */
+        }
+
+
+        /* Adjust button hover effect */
+        .toggle-btn:hover {
+            background-color: #546e7a !important;  /* Darker on hover */
+        }
+
+        /* Flexbox Layout for Charts */
+        .charts-container {
+            display: flex !important;
+			flex-direction: column !important;
+            flex-wrap: wrap !important;
+            gap: 20px !important;
+        }
+
+		.chart-container {
+			background-color: #f9f9f9;
+			padding: 15px;
+			border-radius: 8px;
+			box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+		}
+
+        .chart {
+            flex: 1 1 calc(33.333% - 20px) !important;
+            background-color: #f4f4f4 !important;  /* Original theme */
+            padding: 15px !important;
+            border-radius: 10px !important;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1) !important;
+        }
+
+		.chart-header {
+			font-size: 18px;
+			font-weight: bold;
+			text-align: center;
+			margin-bottom: 10px;
+			color: #333;
+		}
+
+        /* Responsive adjustments*/ 
+        @media (max-width: 768px) {
+            .dashboard-nav {
+                position: absolute !important;
+                width: 100% !important;
+                top: 0 !important;
+                left: 0 !important;
+                transform: translateX(-100%) !important;
+                z-index: 1000 !important;
+            }
+
+		
+            /* Show the navigation on mobile when toggled */
+            .dashboard-nav.collapsed {
+                transform: translateX(0) !important;
+            }
+
+            /* Adjust content to take full width */
+            .content {
+                margin-left: 0 !important;
+            }
+		}
+
+        /* Toggle Button */
+        .toggle-btn {
+            position: fixed !important;
+            top: 20px !important;
+            left: 275px !important;
+            width: 40px !important;
+            height: 40px !important;
+            background-color: #607d8b !important;
+            color: #fff !important;
+            border: none !important;
+            cursor: pointer !important;
+            z-index: 1001 !important;
+            transition: left 0.3s ease !important;
+        }
+
+        .dashboard-nav.collapsed ~ .toggle-btn {
+            left: 20px !important;
+        }
+
+
+        /* Full-width charts on mobile */
+        .charts-container {
+            display: flex !important;
+            flex-wrap: wrap !important;
+            gap: 20px !important;
+        }
+
+        .chart {
+            flex: 1 1 calc(33.333% - 20px) !important;
+            background-color: #f4f4f4 !important;
+            padding: 15px !important;
+            border-radius: 10px !important;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1) !important;
+        }
+
+        @media (max-width: 768px) {
+            .chart {
+                flex: 1 1 100% !important;
+            }
+        }
+
+		/* Date filter styling */
+		.date-filters {
+			display: flex !important;
+ 			justify-content: space-between !important;
+			margin-bottom: 20px !important;
+		}
+
+		.date-filters input[type="date"] {
+			padding: 8px !important;
+			border: 1px solid #ccc !important;
+			border-radius: 4px !important;
+			font-size: 16px !important;
+		}
+
+		.date-filters button {
+			background-color: #607d8b !important;
+			color: #fff !important;
+			padding: 8px 16px !important;
+			border: none !important;
+			border-radius: 4px !important;
+			cursor: pointer !important;
+		}
+
+		.date-filters button:hover {
+			background-color: #546e7a !important;
+		}
+
+		.date-filters button:hover {
+			background-color: #546e7a !important;
+		}
+
+		.subscription-details {
+			font-size: 0.9rem; /* Smaller font size */
+			line-height: 1.4; /* Adjust spacing between lines */
+			color: #555; /* Muted color for less emphasis */
+			margin-top: 10px; /* Small gap from the heading */
+		}
+
+		.subscription-details p {
+			margin: 2px 0; /* Reduce spacing between paragraphs */
+		}
+
+		.subscription-details strong {
+			color: #333; /* Slightly bolder for key terms */
+		}
+    </style>

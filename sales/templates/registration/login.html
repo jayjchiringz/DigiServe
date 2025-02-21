@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title style="text-align: center;">Login</title>
+    {% load static %}
+    <link rel="stylesheet" href="{% static 'css/style_2.css' %}">
+    <link rel="manifest" href="{% static 'manifest.json' %}">
+    <script src="https://cdn.jsdelivr.net/npm/pouchdb@7.3.1/dist/pouchdb.min.js"></script>
+
+    <script>
+        const remoteAPI = 'http://127.0.0.1:8000/api';
+        let db = new PouchDB('digiserve_local_db');
+        console.log('PouchDB initialized:', db);
+
+		// Register Service Worker
+		if ('serviceWorker' in navigator) {
+			navigator.serviceWorker.register('/service-worker.js') // No custom scope needed for root
+				.then((registration) => {
+					console.log('Service Worker registered with scope:', registration.scope);
+				})
+				.catch((error) => {
+					console.error('Service Worker registration failed:', error);
+				});
+		}
+
+        // Hash passwords
+        async function hashPassword(password) {
+            const encoder = new TextEncoder();
+            const data = encoder.encode(password);
+            const hash = await crypto.subtle.digest('SHA-256', data);
+            return Array.from(new Uint8Array(hash))
+                .map((b) => b.toString(16).padStart(2, '0'))
+                .join('');
+        }
+
+        // Function to upsert a user document in PouchDB
+        async function upsertUserDocument(docId, updates) {
+            try {
+                const existingDoc = await db.get(docId);
+                const updatedDoc = { ...existingDoc, ...updates };
+                await db.put(updatedDoc);
+            } catch (err) {
+                if (err.status === 404) {
+                    await db.put({ _id: docId, ...updates });
+                } else {
+                    console.error('Error during document upsert:', err);
+                    throw err;
+                }
+            }
+        }
+
+		async function checkDashboardCache() {
+			try {
+				const cache = await caches.open('digiserve-cache-v1');
+				const cachedResponse = await cache.match('/dashboard/');
+				if (cachedResponse) {
+					console.log('Dashboard successfully found in cache.');
+					return true;
+				} else {
+					console.error('Dashboard not found in cache.');
+					return false;
+				}
+			} catch (error) {
+				console.error('Error checking dashboard cache:', error);
+				return false;
+			}
+		}
+
+        // Handle Login
+		async function handleLogin(event) {
+			event.preventDefault();
+			const username = document.querySelector('[name="username"]').value;
+			const password = document.querySelector('[name="password"]').value;
+			const hashedPassword = await hashPassword(password);
+			console.log('Hashed password generated:', hashedPassword);
+
+			if (navigator.onLine) {
+				console.log('Online mode detected.');
+				try {
+					const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]')?.value || '';
+					console.log('Sending login request to server...');
+					const response = await fetch('/accounts/login/', {
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/x-www-form-urlencoded',
+						},
+						body: new URLSearchParams({
+							username,
+							password,
+							csrfmiddlewaretoken: csrfToken,
+						}),
+					});
+
+					if (response.redirected || response.ok) {
+						console.log('Login successful. Redirecting...');
+
+						// Save user credentials to PouchDB for offline login
+						await upsertUserDocument('currentUser', { username, hashedPassword });
+						window.location.href = response.url || '/dashboard/';
+					} else {
+						const errorMsg = await response.text();
+						console.error('Login failed:', errorMsg);
+						alert('Login failed. Check your username and password.');
+					}
+				} catch (error) {
+					console.error('Error during online login:', error);
+					alert('An error occurred. Please try again.');
+				}
+			} else {
+				console.log('Offline mode detected.');
+				try {
+					const user = await db.get('currentUser');
+					if (user.username === username && user.hashedPassword === hashedPassword) {
+						console.log('Offline login successful.');
+						const isCached = await checkDashboardCache();
+						if (isCached) {
+							console.log('Redirecting to cached dashboard.');
+							window.location.href = '/dashboard/';
+						} else {
+							console.warn('Dashboard not cached. Redirecting to offline page.');
+							alert('Dashboard is not cached for offline use.');
+							window.location.href = '/offline/';
+						}
+					} else {
+						console.warn('Offline credentials do not match.');
+						alert('Invalid offline credentials.');
+					}
+				} catch (error) {
+					console.error('Offline login failed:', error);
+					alert('You must log in online at least once to use offline functionality.');
+				}
+			}
+		}
+
+		// Attach the event listener to the form
+		document.addEventListener('DOMContentLoaded', () => {
+			const loginForm = document.querySelector('#loginForm');
+			if (loginForm) {
+				loginForm.addEventListener('submit', handleLogin);
+			} else {
+				console.error('Login form not found.');
+			}
+		});
+    
+	</script>
+	
+</head>
+<body>
+    <h2 style="text-align: center;">Welcome to DigiStride</h2>
+    <form id="loginForm" method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Login</button>
+    </form>
+    <p style="text-align: center; margin-top: 20px;">
+        Don't have an account?
+        <a href="{% url 'register' %}">Register here</a>
+    </p>
+    <footer style="position: fixed; bottom: 10px; right: 10px; font-size: 12px; color: #555;">
+        Powered by <strong>DigiStride</strong>
+    </footer>
+</body>
+</html>

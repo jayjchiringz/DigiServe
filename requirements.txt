@@ -1,0 +1,15 @@
+asgiref
+certifi
+charset-normalizer
+colorama
+Django
+idna
+pillow
+pypng
+qrcode
+requests
+sqlparse
+typing_extensions
+tzdata
+urllib3
+whitenoise

@@ -1,0 +1,542 @@
+{% extends 'base.html' %}
+{% load static %}
+{% load currency_filters %}
+{% block header %}{{ selected_business.name }} - Process New Sale {% endblock %}
+{% block content %}
+		<script>
+			function getCSRFToken() {
+				let token = null;
+
+				// Check cookies first
+				document.cookie.split(";").forEach(cookie => {
+					let [name, value] = cookie.trim().split("=");
+					if (name === "csrftoken") token = value;
+				});
+
+				// Check hidden input field if not found in cookies
+				if (!token) {
+					const csrfTokenInput = document.querySelector("[name=csrfmiddlewaretoken]");
+					if (csrfTokenInput) {
+						token = csrfTokenInput.value;
+					}
+				}
+
+				if (!token) {
+					console.error("⚠️ CSRF token not found. Requests may fail!");
+				}
+
+				return token;
+			}
+			
+			// Initialize PouchDB for offline sales
+			const salesDB = new PouchDB('digiserve_sales');
+
+			// Function to save a sale to PouchDB
+			function saveSaleLocally(saleData) {
+				if (!saleData.receipt_no) {
+					saleData.receipt_no = `R-${Date.now()}`; // ✅ Ensure receipt number is assigned
+				}
+
+				const saleId = `sale-${Date.now()}`;
+				saleData._id = saleId;
+
+				return salesDB.get(saleId)
+					.then(existingSale => {
+						console.warn(`Sale ${saleId} already exists. Updating instead.`);
+						return salesDB.put({ ...existingSale, ...saleData });
+					})
+					.catch(err => {
+						if (err.status === 404) {
+							console.log("📝 Saving Offline Sale:", saleData);
+							return salesDB.put(saleData); // ✅ Save new sale if it does not exist
+						}
+						console.error("⚠️ Error saving sale locally:", err);
+					});
+			}
+
+			// Function to sync unsynced sales
+			function syncSales() {
+				if (!navigator.onLine) {
+					console.log("⚠️ App is offline. Skipping sync.");
+					return; // Prevent sync if the app is offline
+				}
+				
+				salesDB.allDocs({ include_docs: true })
+					.then((result) => {
+						const unsyncedSales = result.rows
+							.map((row) => row.doc)
+							.filter((doc) => !doc.synced); // Filter out already synced sales
+
+						console.log(`Syncing ${unsyncedSales.length} unsynced sales...`);
+
+						const syncPromises = unsyncedSales.map((sale) => {
+							return fetch('/sales/new/', {
+								method: 'POST',
+								headers: {
+									'Content-Type': 'application/json',
+									'X-CSRFToken': getCSRFToken(),
+								},
+								body: JSON.stringify(sale),
+							})
+								.then((response) => {
+									if (!response.ok) {
+										throw new Error(`Failed to sync sale: ${response.statusText}`);
+									}
+									return response.json();
+								})
+								.then(() => {
+									sale.synced = true; // Mark sale as synced
+									return salesDB.put(sale);
+								})
+								.catch((err) => {
+									console.error(`Error syncing sale:`, err);
+								});
+						});
+
+						return Promise.all(syncPromises);
+					})
+					.then(() => {
+						console.log('All unsynced sales have been processed.');
+					})
+					.catch((err) => {
+						console.error('Error syncing sales:', err);
+					});
+			}
+
+			// Save sale directly to the backend if online
+			function submitSale(saleData, formData) {
+				if (navigator.onLine) {
+					console.log("🌐 Online. Sending sale directly to backend.");
+
+					fetch('/api/sales/', {
+						method: 'POST',
+						body: formData, // Use FormData to preserve structure
+						headers: {
+							'X-CSRFToken': getCSRFToken(),
+						},
+					})
+						.then(response => {
+							if (!response.ok) {
+								throw new Error('Failed to sync sale.');
+							}
+							return response.json();
+						})
+						.then(data => {
+							console.log('✅ Sale successfully submitted:', data);
+							alert('Sale successfully submitted.');
+						})
+						.catch(err => {
+							console.error('Error syncing sale:', err);
+							alert(`Failed to sync sale ${saleData.receipt_no}. It will be retried later.`);
+						});
+				} else {
+					console.log("⚠️ Offline. Saving sale locally.");
+					saveSaleLocally(saleData); // Save sale locally when offline
+				}
+			}
+
+			// Sync sales when the app comes back online
+			window.addEventListener('online', () => {
+				console.log('Back online! Syncing sales...');
+				syncSales();
+			});
+	
+			function formatCurrency(value) {
+				return 'Kshs ' + parseFloat(value).toFixed(2).replace(/\d(?=(\d{3})+\.)/g, '$&,');
+			}
+
+			function updateGrandTotal() {
+				const totalBill = parseFloat(document.getElementById('total').value.replace(/[^\d.]/g, '')) || 0;
+				const tipAmount = parseFloat(document.getElementById('tip').value) || 0;
+				const grandTotal = totalBill + tipAmount;
+				document.getElementById('grand_total').value = formatCurrency(grandTotal);
+			}
+
+			function updateTotal() {
+				let total = 0;
+				document.querySelectorAll('.item-row').forEach(function(row) {
+					let quantity = row.querySelector('.quantity').value;
+					let price = row.querySelector('.price').value;
+					total += quantity * price;
+				});
+				document.getElementById('total').value = formatCurrency(total);
+				updateGrandTotal();
+			}
+
+			function updateUnitSellingPrice(selectElement) {
+				const itemRow = selectElement.closest('.item-row');
+				const selectedOption = selectElement.options[selectElement.selectedIndex];
+
+				// Update Unit Selling Price and Stock
+				const price = selectedOption.getAttribute('data-price');
+				const stock = selectedOption.getAttribute('data-stock');
+	
+				itemRow.querySelector('.price').value = price;
+				itemRow.querySelector('.display-price').innerText = formatCurrency(price);
+
+				// Update the max attribute of the quantity input based on available stock
+				itemRow.querySelector('.quantity').max = stock;
+				itemRow.querySelector('.quantity').setAttribute('data-max', stock); // For further validation
+    
+				// Update the item image
+				updateItemImage(itemRow, selectedOption);
+				updateTotal()
+			}
+
+			function updateItemImage(itemRow, selectedOption) {
+				const imageUrl = selectedOption.getAttribute('data-image');
+				console.log("Selected image URL:", imageUrl); // Debug log
+				const itemImageElement = itemRow.querySelector('.item-image');
+				const noImageMessageElement = itemRow.querySelector('.no-image-message');
+
+				if (imageUrl && imageUrl.trim() !== "") {
+					itemImageElement.src = imageUrl;
+					itemImageElement.style.display = "block";
+					noImageMessageElement.style.display = "none";
+				} else {
+					itemImageElement.style.display = "none";
+					noImageMessageElement.style.display = "block";
+				}
+			}
+
+			function validateQuantity(quantityInput) {
+				const max = quantityInput.getAttribute('data-max');
+				if (parseInt(quantityInput.value) > parseInt(max)) {
+					alert(`Quantity exceeds available stock (${max} units available).`);
+					quantityInput.value = max; // Set to maximum allowed stock
+				}
+				updateTotal();
+			}
+
+			function addItemRow() {
+				const itemRow = document.querySelector('.item-row').cloneNode(true);
+				const selectElement = itemRow.querySelector('.item');
+				
+				itemRow.querySelector('.quantity').value = 1;
+				itemRow.querySelector('.price').value = "";
+				itemRow.querySelector('.display-price').innerText = formatCurrency(0);
+				itemRow.querySelector('.item-image').style.display = "none";
+				itemRow.querySelector('.item-image').src = "";				
+				itemRow.querySelector('.no-image-message').style.display = "block";
+
+				// Clear the selected option
+				selectElement.value = "";
+
+				// Ensure the correct `name` attributes are present
+				itemRow.querySelectorAll('input, select').forEach((input) => {
+					const name = input.getAttribute('name');
+					if (name) {
+						input.setAttribute('name', name); // Retain the correct name
+					}
+				});
+
+				// Attach event listener to the new dropdown
+				selectElement.addEventListener('change', function () {
+					updateUnitSellingPrice(this);
+				});
+				
+				document.getElementById('items-container').appendChild(itemRow);
+				updateTotal();
+			}
+
+			function confirmSubmission() {
+				const totalBill = document.getElementById('total').value;
+				const status = document.getElementById('status').value;
+				const confirmation = confirm(`Are you sure you want to submit the sale of ${totalBill} as ${status}?`);
+				if (confirmation) {
+					document.querySelector('form').submit(); // Submit the form if confirmed
+				} else {
+					return false; // Prevent form submission if not confirmed
+				}
+			}
+
+			function initializeDropdownListeners() {
+				// Attach onchange event listener to item dropdowns
+				document.querySelectorAll('.item').forEach(function (selectElement) {
+					selectElement.addEventListener('change', function () {
+						const itemRow = selectElement.closest('.item-row');
+						updateItemImage(itemRow, selectElement.options[selectElement.selectedIndex]);
+						updateUnitSellingPrice(this);
+					});
+				});
+			}
+
+			function syncOfflineSales() {
+				const db = new PouchDB('offline_sales');
+				db.allDocs({ include_docs: true }).then((result) => {
+					const unsyncedSales = result.rows.filter(row => !row.doc.synced);
+					console.log(`Syncing ${unsyncedSales.length} offline sales...`);
+					
+					const syncPromises = unsyncedSales.map((sale) => {  // ✅ Add `{}` to wrap function body
+						return fetch("/api/sales/", {
+							method: "POST",
+							headers: {
+								"Content-Type": "application/json",
+								"X-CSRFToken": getCSRFToken(),
+							},
+							body: JSON.stringify(sale.doc),
+						})
+						.then(response => {
+							if (!response.ok) {
+								return response.json().then(errorData => {
+									console.error("❌ Server Response Error:", errorData);
+									throw new Error(`🚨 Sale sync failed: ${errorData.message || response.statusText}`);
+								});
+							}
+							return response.json();
+						})
+						.then(data => {
+							console.log("✅ Sale successfully synced:", data);
+							alert("✅ Sale submitted successfully!");
+							return salesDB.put({ ...sale.doc, synced: true });
+						})
+						.catch(err => {
+							console.error("⚠️ Sync Error:", err);
+							alert(`❌ Failed to sync sale: ${err.message}`);
+						});
+					});
+					return Promise.all(syncPromises);
+				});
+			}
+
+			// Check for sync when back online
+			window.addEventListener('online', syncOfflineSales);
+
+			document.addEventListener("DOMContentLoaded", function () {
+				// Ensure the form exists before trying to attach event listeners
+				const createSaleForm = document.getElementById('create-sale-form');
+				if (!createSaleForm) {
+					console.error("The #create-sale-form element does not exist in the DOM.");
+					return; // Exit if form is not found
+				}
+
+				// Attach event listener for form submission
+				createSaleForm.addEventListener('submit', function (e) {
+					e.preventDefault(); // Prevent default form submission
+					const formData = new FormData(createSaleForm);
+
+					const receiptNoInput = formData.get("receipt_no") || `${Date.now()}`;
+					formData.set("receipt_no", receiptNoInput);
+					console.log("🧾 Assigned Receipt No:", receiptNoInput);
+
+					// Debugging: Log all form data
+					for (let [key, value] of formData.entries()) {
+						console.log(`${key}: ${value}`);
+					}
+					
+					// Convert form data to JSON
+					const saleData = {
+						table: formData.get('table'),
+						payment_mode: formData.get('payment_mode'),
+						mpesa_number: formData.get('mpesa_number') || null,
+						customer_name: formData.get('customer_name') || null,
+						items: formData.getAll('items[]'),
+						quantities: formData.getAll('quantities[]'),
+						prices: formData.getAll('prices[]'),
+						total: parseFloat(formData.get('total').replace(/[^\d.]/g, '')),
+						tip: parseFloat(formData.get('tip')) || 0,
+						grand_total: parseFloat(formData.get('grand_total').replace(/[^\d.]/g, '')),
+						status: formData.get('status'),
+						receipt_no: formData.get("receipt_no") || `${Date.now()}`,
+					};
+					console.log("🚀 Final Payload Before Sending:", JSON.stringify(saleData, null, 2));
+					console.log("🚀 Sending Sale Data:", saleData);
+					
+					// Validation Check
+					if (!saleData.table || saleData.items.length === 0 || isNaN(saleData.total) || saleData.total <= 0) {
+						alert("⚠️ Please fill in all required fields correctly before submitting.");
+						console.warn("🚨 Invalid sale data:", saleData);
+						return;
+					}
+
+					// Debugging: Check what is being sent
+					console.log("🚀 Final Sale Data Sent to Backend:", JSON.stringify(saleData, null, 2));
+
+					if (navigator.onLine) {
+						// Send as `multipart/form-data` instead of JSON
+						fetch('/api/sales/', {
+							method: 'POST',
+							body: formData,
+							headers: {
+								'X-CSRFToken': getCSRFToken(),
+							},
+						})
+							.then(response => {
+								if (!response.ok) {
+									throw new Error('Failed to sync sale.');
+								}
+								return response.json();
+							})
+							.then(data => {
+								console.log('Sale successfully synced:', data);
+								alert('Sale successfully submitted.');
+							})
+							.catch(err => {
+								console.error('Error syncing sale:', err);
+								alert(`Failed to sync sale ${saleData.receipt_no}. It will be retried later.`);
+							});
+					} else {
+						// Handle offline logic
+					}
+
+					// Send the form data via an AJAX request
+					fetch(createSaleForm.action, {
+						method: 'POST',
+						body: formData,
+						headers: {
+							'X-Requested-With': 'XMLHttpRequest',
+						},
+					})
+						.then(response => {
+							if (!response.ok) {
+								throw new Error('Failed to submit the sale. Please try again.');
+							}
+							return response.json();
+						})
+						.then(data => {
+							if (data.success) {
+								// Open receipt in a new tab
+								const receiptUrl = `/sales/receipt/${data.receipt_no}/`;
+								window.open(receiptUrl, '_blank');
+
+								// Refresh the current page
+								location.reload();
+							} else {
+								alert(data.message || 'An error occurred. Please try again.');
+							}
+						})
+						.catch(error => {
+							console.error('Error:', error);
+							alert('An unexpected error occurred. Please try again later.');
+						});
+				});
+				// Initialize dropdown listeners
+				initializeDropdownListeners();
+
+				// Ensure grand total is updated on page load
+				updateGrandTotal();
+			});			
+		</script>			
+		
+		<style>		
+			.item-image-container {
+				display: flex;
+				justify-content: center; /* Horizontal alignment */
+				align-items: center;    /* Vertical alignment */
+				height: 100px;          /* Set a consistent height for the container */
+				width: 100%;            /* Optional: adjust as needed */
+				overflow: hidden;       /* Prevent image overflow */
+				border: 1px solid #ddd; /* Optional: Add a border */
+				background-color: #f9f9f9; /* Optional: Add a background color */
+			}
+
+			.item-image {
+				max-height: 100%; /* Ensure the image fits within the container height */
+				max-width: 100%;  /* Ensure the image fits within the container width */
+			}		
+		</style>		
+		{% if messages %}
+			<ul class="messages">
+				{% for message in messages %}
+					<li{% if message.tags %} class="{{ message.tags }}"{% endif %}>{{ message }}</li>
+				{% endfor %}
+			</ul>
+		{% endif %}
+
+		<!--<form method="post" onsubmit="return confirmSubmission();">-->
+		<form method="post" id="create-sale-form">
+			{% csrf_token %}
+			<!-- Select Table -->
+			<label for="table">Table:</label>
+			<select name="table" id="table" required>
+				<option value="">Select a Table</option>
+				{% for table in tables %}
+					<option value="{{ table.id }}">{{ table.name }}</option>
+				{% endfor %}
+			</select><br><br>
+			
+			<!-- Mode of Payment -->
+			<label for="payment_mode">Mode of Payment:</label>
+			<select name="payment_mode" id="payment_mode" onchange="toggleMpesaNumber()"  default="Cash">
+				<option value="Cash">Cash</option>
+				<option value="MPesa">MPesa</option>
+				<option value="Credit/Debit Card">Credit/Debit Card</option>
+			</select><br><br>
+
+			<!-- Add MPesa Number Field -->
+			<div id="mpesa-number-container" style="display: none;">
+				<label for="mpesa_number">MPesa Number:</label>
+				<input type="text"
+					   name="mpesa_number"
+					   id="mpesa_number"
+					   placeholder="254XXXXXXXXX"
+					   pattern="^254\d{9}$"
+					   title="Enter a valid MPesa number in the format: 254XXXXXXXXX"><br><br>
+			</div>
+			<script>
+				function toggleMpesaNumber() {
+					const paymentMode = document.getElementById('payment_mode').value;
+					const mpesaNumberContainer = document.getElementById('mpesa-number-container');
+					mpesaNumberContainer.style.display = paymentMode === 'MPesa' ? 'block' : 'none';
+				}
+			</script>
+
+			<!-- Customer Information -->
+			<label for="customer_name">Customer Name (optional):</label>
+			<input type="text" name="customer_name" id="customer_name"><br><br>
+
+			<!-- Items and Quantities -->
+			<div id="items-container">
+				<div class="item-row">
+					<label for="item">Item:</label>
+					<select name="items[]" class="item" onchange="updateUnitSellingPrice(this)">
+						<option value="">Select an item</option>
+						{% for item in items %}
+							<option value="{{ item.id }}" 
+									data-price="{{ item.unit_selling_price|floatformat:2 }}"
+									data-stock="{{ item.stock }}"
+									data-image="{{ item.image }}">
+								{{ item.name }} ({{ item.stock }} units available)
+							</option>
+						{% endfor %}
+					</select>
+
+					<label for="quantity">Quantity:</label>
+					<input type="number" name="quantities[]" class="quantity" min="1" value="1" oninput="updateTotal()">
+
+					<label for="unit_selling_price">Unit Selling Price:</label>
+					<span class="display-price">0.00</span>
+
+					<input type="hidden" class="price" name="prices[]" value=""><br>
+					
+					<!-- Item Image Display -->
+					<div class="item-image-container">
+						<img src="" alt="No image for the product." class="item-image" style="display: none;">
+						<span class="no-image-message" style="display: none;">No image for the product.</span>
+					</div><br><br>
+				</div>
+			</div>
+
+			<button type="button" onclick="addItemRow()">Add Another Item</button><br><br>
+
+			<!-- Total Bill -->
+			<label for="total">Total Bill:</label>
+			<input type="text" id="total" name="total" readonly><br><br>
+
+			<!-- Tip Input -->
+			<label for="tip">Tip Amount:</label>
+			<input type="number" id="tip" name="tip" min="0" step="1" value="0" oninput="updateGrandTotal()"><br><br>
+
+			<!-- Grand Total -->
+			<label for="grand_total">Grand Total:</label>
+			<input type="text" id="grand_total" name="grand_total" readonly><br><br>
+
+			<!-- Payment Status -->
+			<label for="status">Status:</label>
+			<select name="status" id="status">
+				<option value="Unpaid">Unpaid</option>
+				<option value="Paid">Paid</option>
+			</select><br><br>
+			<button type="submit">Submit</button>
+		</form>
+{% endblock %}
