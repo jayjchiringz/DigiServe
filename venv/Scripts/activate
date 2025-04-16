@@ -38,7 +38,7 @@ deactivate () {
 # unset irrelevant variables
 deactivate nondestructive
 
-VIRTUAL_ENV="C:\Users\dell\Django Project\DigiServe\venv"
+VIRTUAL_ENV="C:\Users\dell\OneDrive\Projects\Django Project\DigiServe\venv"
 export VIRTUAL_ENV
 
 _OLD_VIRTUAL_PATH="$PATH"
